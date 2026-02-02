@@ -1,4 +1,4 @@
-# State-Constrained HJ via PINNs (1D)
+# State-Constrained HJ via PINNs
 
 This project trains a PINN to approximate the viscosity solution of the static Hamilton–Jacobi equation
 with state-constrained boundary conditions by solving the penalized problem:
