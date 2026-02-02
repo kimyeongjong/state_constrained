@@ -32,6 +32,25 @@ uv sync
 uv run python experiments/state_constrained_1d.py --k 2 --eps 0.5 0.2 0.1 0.05 --steps 4000 --width 128 --layers 3 --batch 2048
 ```
 
+### Config-based runs (recommended)
+
+Example configs live in `configs/`:
+
+- `configs/state_constrained_1d.yaml`
+- `configs/state_constrained_cylinder.yaml`
+
+Run with a YAML config:
+
+```
+uv run python experiments/state_constrained_1d.py --config configs/state_constrained_1d.yaml
+```
+
+Override any value from the config on the CLI:
+
+```
+uv run python experiments/state_constrained_1d.py --config configs/state_constrained_1d.yaml --steps 8000 --lr 5e-4
+```
+
 Arguments:
 - --k: half-width of domain [-k, k]
 - --eps: list of epsilons for outer loop
@@ -43,6 +62,18 @@ Arguments:
 - --plot: set to plot predictions after each epsilon
 
 The script prints the MSE vs the exact solution u(x) = exp(x - k) on a fine grid after each epsilon stage.
+
+## Run (cylindrical domain experiment)
+
+```
+uv run python experiments/state_constrained_cylinder.py --n 3 --k 2 --eps 0.5 0.2 0.1 0.05 --steps 4000 --width 128 --layers 3 --batch 2048
+```
+
+Config-based:
+
+```
+uv run python experiments/state_constrained_cylinder.py --config configs/state_constrained_cylinder.yaml
+```
 
 ## Notes
 
