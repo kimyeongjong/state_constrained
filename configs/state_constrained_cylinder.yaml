@@ -1,0 +1,16 @@
+# Example config for experiments/state_constrained_cylinder.py
+n: 3
+k: 2.0
+eps: [0.5, 0.2, 0.1, 0.05]
+steps: 4000
+batch: 2048
+lr: 1.0e-3
+width: 128
+layers: 3
+act: tanh
+margin: 0.0
+alpha: 0.5
+device: auto
+seed: 1234
+save_ckpt: false
+ckpt_dir: checkpoints

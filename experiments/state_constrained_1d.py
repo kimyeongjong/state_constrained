@@ -16,6 +16,7 @@ from pinn_hj.networks import MLP
 from pinn_hj.hamiltonians import ShiftedAbsHamiltonianQuadTail
 from pinn_hj.trainers import TrainConfig, train_for_epsilon
 from pinn_hj.distance import distance_to_box
+from pinn_hj.config import load_yaml_config
 
 
 def exact_solution(x: torch.Tensor, k: float) -> torch.Tensor:
@@ -23,24 +24,35 @@ def exact_solution(x: torch.Tensor, k: float) -> torch.Tensor:
     return torch.exp(x - float(k))
 
 
-def parse_args():
+def _build_parser(defaults=None):
+    defaults = defaults or {}
     p = argparse.ArgumentParser(description="State-constrained HJ via PINNs (1D)")
-    p.add_argument("--k", type=float, default=2.0, help="Domain half-width: Ω = [-k, k]")
-    p.add_argument("--eps", type=float, nargs="+", default=[0.5, 0.2, 0.1, 0.05], help="Epsilon schedule")
-    p.add_argument("--steps", type=int, default=4000, help="Training steps per epsilon")
-    p.add_argument("--batch", type=int, default=2048, help="Collocation batch size")
-    p.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    p.add_argument("--width", type=int, default=128, help="Hidden layer width")
-    p.add_argument("--layers", type=int, default=3, help="Number of hidden layers")
-    p.add_argument("--act", type=str, default="tanh", help="Activation (tanh|silu|gelu|relu)")
-    p.add_argument("--margin", type=float, default=None, help="Sampling margin outside Ω (default 0.5*k)")
-    p.add_argument("--alpha", type=float, default=0.5, help="Quadratic tail curvature for H")
-    p.add_argument("--device", type=str, default="auto", help="cpu|cuda|auto")
-    p.add_argument("--seed", type=int, default=1234, help="Random seed")
-    p.add_argument("--plot", action="store_true", help="Plot predictions after each epsilon")
-    p.add_argument("--save", action="store_true", help="Save plots after each epsilon")
-    p.add_argument("--save-dir", type=str, default="plots", help="Directory to save plots")
-    return p.parse_args()
+    p.add_argument("--config", type=str, default=defaults.get("config"), help="YAML config path")
+    p.add_argument("--k", type=float, default=defaults.get("k", 2.0), help="Domain half-width: Ω = [-k, k]")
+    p.add_argument("--eps", type=float, nargs="+", default=defaults.get("eps", [0.5, 0.2, 0.1, 0.05]), help="Epsilon schedule")
+    p.add_argument("--steps", type=int, default=defaults.get("steps", 4000), help="Training steps per epsilon")
+    p.add_argument("--batch", type=int, default=defaults.get("batch", 2048), help="Collocation batch size")
+    p.add_argument("--lr", type=float, default=defaults.get("lr", 1e-3), help="Learning rate")
+    p.add_argument("--width", type=int, default=defaults.get("width", 128), help="Hidden layer width")
+    p.add_argument("--layers", type=int, default=defaults.get("layers", 3), help="Number of hidden layers")
+    p.add_argument("--act", type=str, default=defaults.get("act", "tanh"), help="Activation (tanh|silu|gelu|relu)")
+    p.add_argument("--margin", type=float, default=defaults.get("margin", None), help="Sampling margin outside Ω (default 0.5*k)")
+    p.add_argument("--alpha", type=float, default=defaults.get("alpha", 0.5), help="Quadratic tail curvature for H")
+    p.add_argument("--device", type=str, default=defaults.get("device", "auto"), help="cpu|cuda|auto")
+    p.add_argument("--seed", type=int, default=defaults.get("seed", 1234), help="Random seed")
+    p.add_argument("--plot", action="store_true", default=defaults.get("plot", False), help="Plot predictions after each epsilon")
+    p.add_argument("--save", action="store_true", default=defaults.get("save", False), help="Save plots after each epsilon")
+    p.add_argument("--save-dir", type=str, default=defaults.get("save_dir", "plots"), help="Directory to save plots")
+    return p
+
+
+def parse_args(argv=None):
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=str, default=None)
+    cfg_args, _ = pre.parse_known_args(argv)
+    cfg = load_yaml_config(cfg_args.config) if cfg_args.config else {}
+    parser = _build_parser(cfg)
+    return parser.parse_args(argv)
 
 
 def main():

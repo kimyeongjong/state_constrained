@@ -15,26 +15,38 @@ from pinn_hj.networks import MLP
 from pinn_hj.hamiltonians import ShiftedAbsHamiltonianQuadTail, ShiftedL1Hamiltonian
 from pinn_hj.trainers import TrainConfig, compute_residual, train_for_epsilon
 from pinn_hj.cylinder_domain import distance_to_cylindrical_domain, sample_box_domain
+from pinn_hj.config import load_yaml_config
 
 
-def parse_args():
+def _build_parser(defaults=None):
+    defaults = defaults or {}
     p = argparse.ArgumentParser(description="State-constrained HJ via PINNs on cylindrical Ω_k in R^n")
-    p.add_argument("--n", type=int, default=3, help="Dimension n (>=2)")
-    p.add_argument("--k", type=float, default=2.0, help="Domain scale k for Ω_k")
-    p.add_argument("--eps", type=float, nargs="+", default=[0.5, 0.2, 0.1, 0.05], help="Epsilon schedule")
-    p.add_argument("--steps", type=int, default=4000, help="Training steps per epsilon")
-    p.add_argument("--batch", type=int, default=2048, help="Collocation batch size")
-    p.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    p.add_argument("--width", type=int, default=128, help="Hidden layer width")
-    p.add_argument("--layers", type=int, default=3, help="Number of hidden layers")
-    p.add_argument("--act", type=str, default="tanh", help="Activation (tanh|silu|gelu|relu)")
-    p.add_argument("--margin", type=float, default=None, help="Sampling margin outside cube [-k,k]^n (default 0)")
-    p.add_argument("--alpha", type=float, default=0.5, help="Quadratic tail curvature for H")
-    p.add_argument("--device", type=str, default="auto", help="cpu|cuda|auto")
-    p.add_argument("--seed", type=int, default=1234, help="Random seed")
-    p.add_argument("--save-ckpt", action="store_true", help="Save model checkpoint after each epsilon")
-    p.add_argument("--ckpt-dir", type=str, default="checkpoints", help="Directory to save checkpoints")
-    return p.parse_args()
+    p.add_argument("--config", type=str, default=defaults.get("config"), help="YAML config path")
+    p.add_argument("--n", type=int, default=defaults.get("n", 3), help="Dimension n (>=2)")
+    p.add_argument("--k", type=float, default=defaults.get("k", 2.0), help="Domain scale k for Ω_k")
+    p.add_argument("--eps", type=float, nargs="+", default=defaults.get("eps", [0.5, 0.2, 0.1, 0.05]), help="Epsilon schedule")
+    p.add_argument("--steps", type=int, default=defaults.get("steps", 4000), help="Training steps per epsilon")
+    p.add_argument("--batch", type=int, default=defaults.get("batch", 2048), help="Collocation batch size")
+    p.add_argument("--lr", type=float, default=defaults.get("lr", 1e-3), help="Learning rate")
+    p.add_argument("--width", type=int, default=defaults.get("width", 128), help="Hidden layer width")
+    p.add_argument("--layers", type=int, default=defaults.get("layers", 3), help="Number of hidden layers")
+    p.add_argument("--act", type=str, default=defaults.get("act", "tanh"), help="Activation (tanh|silu|gelu|relu)")
+    p.add_argument("--margin", type=float, default=defaults.get("margin", None), help="Sampling margin outside cube [-k,k]^n (default 0)")
+    p.add_argument("--alpha", type=float, default=defaults.get("alpha", 0.5), help="Quadratic tail curvature for H")
+    p.add_argument("--device", type=str, default=defaults.get("device", "auto"), help="cpu|cuda|auto")
+    p.add_argument("--seed", type=int, default=defaults.get("seed", 1234), help="Random seed")
+    p.add_argument("--save-ckpt", action="store_true", default=defaults.get("save_ckpt", False), help="Save model checkpoint after each epsilon")
+    p.add_argument("--ckpt-dir", type=str, default=defaults.get("ckpt_dir", "checkpoints"), help="Directory to save checkpoints")
+    return p
+
+
+def parse_args(argv=None):
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=str, default=None)
+    cfg_args, _ = pre.parse_known_args(argv)
+    cfg = load_yaml_config(cfg_args.config) if cfg_args.config else {}
+    parser = _build_parser(cfg)
+    return parser.parse_args(argv)
 
 
 def main():
