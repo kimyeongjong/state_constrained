@@ -1,0 +1,19 @@
+[project]
+name = "state-constrained"
+version = "0.1.0"
+description = "State constrained PINN experiments"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "torch>=2.1",
+  "numpy>=1.24",
+  "tqdm>=4.66",
+  "matplotlib>=3.8",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["pinn_hj"]
