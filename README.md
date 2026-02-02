@@ -2,9 +2,7 @@
 
 This project trains a PINN to approximate the viscosity solution of the static Hamilton–Jacobi equation
 with state-constrained boundary conditions by solving the penalized problem:
-$$
-u(x) + H(x, \nabla u(x)) = d(x, \Omega) / \epsilon \quad \text{in} \mathbb{R}^n
-$$
+$$u(x) + H(x, \nabla u(x)) = d(x, \Omega) / \epsilon \quad \text{in} \mathbb{R}^n$$
 and then decreasing $\epsilon -> 0$.
 
 First experiment:
