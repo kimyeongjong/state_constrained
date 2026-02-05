@@ -1,4 +1,4 @@
-plots/
+results/
 checkpoints/
 .DS_Store
 .venv/
