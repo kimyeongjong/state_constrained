@@ -7,14 +7,16 @@ setting:
   n: 5
   domain: cylinder
   k: 3.0
-  margin: 0.0
+  margin: 1.0
   alpha: 0.5
 
 training:
   eps: [0.8, 0.4, 0.2, 0.1, 0.05]
   steps: 6000
   batch: 4096
-  lr: 1.0e-3
+  lr: 1.0e-4
+  sample_every: 200
+  max_grad_norm: 1.0
 
 model:
   width: 256
@@ -23,5 +25,5 @@ model:
 
 evaluation:
   eval: residual
-  eval_points: 400
+  eval_points: 3125
   log_every: 200

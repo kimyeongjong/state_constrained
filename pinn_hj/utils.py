@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 
 
-def resolve_device(device: str | torch.device) -> torch.device:
+def resolve_device(device: Union[str, torch.device]) -> torch.device:
     """
     Resolve a device string or torch.device into a torch.device instance.
     """

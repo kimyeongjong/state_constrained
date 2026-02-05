@@ -15,6 +15,8 @@ training:
   steps: 4000
   batch: 2048
   lr: 1.0e-3
+  sample_every: 1
+  max_grad_norm: null
 
 model:
   width: 128

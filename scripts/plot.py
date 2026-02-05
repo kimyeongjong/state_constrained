@@ -1,5 +1,6 @@
+import math
 import os
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
 import numpy as np
 import torch
@@ -7,35 +8,19 @@ import torch
 from pinn_hj.cylinder_domain import cylindrical_params, distance_to_cylindrical_domain
 
 
-def _batched_residual(
+def _batched_predict(
     model: torch.nn.Module,
-    hamiltonian: torch.nn.Module,
     x: torch.Tensor,
-    low: torch.Tensor,
-    high: torch.Tensor,
-    eps: float,
-    distance_fn: Optional[Callable[[torch.Tensor], torch.Tensor]],
-    compute_residual: Callable,
     batch_size: int = 8192,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    r_chunks = []
+) -> torch.Tensor:
     u_chunks = []
     n = x.shape[0]
     for i in range(0, n, batch_size):
         xi = x[i : i + batch_size].detach().clone()
-        r, u = compute_residual(
-            model,
-            hamiltonian,
-            xi,
-            low,
-            high,
-            eps,
-            distance_fn=distance_fn,
-            create_graph=False,
-        )
-        r_chunks.append(r.detach())
+        with torch.no_grad():
+            u = model(xi)
         u_chunks.append(u.detach())
-    return torch.cat(r_chunks, dim=0), torch.cat(u_chunks, dim=0)
+    return torch.cat(u_chunks, dim=0)
 
 
 def _orthonormal_plane_basis(axis: torch.Tensor) -> torch.Tensor:
@@ -101,18 +86,31 @@ def _plot_heatmap(
         plt.close()
 
 
+def _ensure_dir(path: Optional[str], save: bool) -> Optional[str]:
+    if not save:
+        return None
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _mask_to_cylinder(data: torch.Tensor, x_flat: torch.Tensor, k: float) -> torch.Tensor:
+    d = distance_to_cylindrical_domain(x_flat, k).view(data.shape)
+    mask = d <= 1e-6
+    return torch.where(mask, data, torch.tensor(float("nan"), device=data.device))
+
+
+def _exact_solution_axis(x: torch.Tensor, k: float) -> torch.Tensor:
+    n_dim = x.shape[1]
+    a = x.sum(dim=1, keepdim=True) / math.sqrt(float(n_dim))
+    return torch.exp(a - k / math.sqrt(float(n_dim)))
+
+
 def plot_after_epsilon(
     *,
     n_dim: int,
     k: float,
     eps: float,
-    domain: str,
     model: torch.nn.Module,
-    hamiltonian: torch.nn.Module,
-    low: torch.Tensor,
-    high: torch.Tensor,
-    distance_fn: Optional[Callable[[torch.Tensor], torch.Tensor]],
-    compute_residual: Callable,
     save: bool,
     save_dir: Optional[str],
     show: bool,
@@ -146,10 +144,10 @@ def plot_after_epsilon(
         ax.legend()
         fig.tight_layout()
 
-        if save:
-            os.makedirs(save_dir, exist_ok=True)
+        save_root = _ensure_dir(save_dir, save)
+        if save_root:
             fname = f"hj_pinn_k{int(k) if float(k).is_integer() else k}_eps_{eps:g}.png"
-            out_path = os.path.join(save_dir, fname)
+            out_path = os.path.join(save_root, fname)
             fig.savefig(out_path, dpi=150)
             print(f"Saved plot to: {out_path}")
 
@@ -171,67 +169,53 @@ def plot_after_epsilon(
 
     margin_plot = margin_plot_ratio * k
     tag = f"n{n_dim}_k{k:g}_eps{eps:g}"
+    save_root = _ensure_dir(save_dir, save)
 
     if n_dim == 2:
         lim = k + margin_plot
         xs = torch.linspace(-lim, lim, grid, device=device, dtype=dtype)
         x1, x2 = torch.meshgrid(xs, xs, indexing="ij")
         x_flat = torch.stack([x1.reshape(-1), x2.reshape(-1)], dim=1)
-        r, u = _batched_residual(model, hamiltonian, x_flat, low, high, eps, distance_fn, compute_residual)
-        r = r.view(grid, grid)
-        u = u.view(grid, grid)
-        if domain == "cylinder":
-            d = distance_to_cylindrical_domain(x_flat, k).view(grid, grid)
-            mask = d <= 1e-6
-            r = torch.where(mask, r, torch.tensor(float("nan"), device=r.device))
-            u = torch.where(mask, u, torch.tensor(float("nan"), device=u.device))
-
-        r_np = r.detach().cpu().numpy()
-        u_np = u.detach().cpu().numpy()
+        u_pred = _batched_predict(model, x_flat)
+        u_true = _exact_solution_axis(x_flat, k)
+        diff = (u_pred - u_true).view(grid, grid)
+        diff = _mask_to_cylinder(diff, x_flat, k)
+        diff_np = diff.detach().cpu().numpy()
         extent = [-lim, lim, -lim, lim]
 
-        if save:
-            os.makedirs(save_dir, exist_ok=True)
-            u_path = os.path.join(save_dir, f"heatmap_u_{tag}.png")
-            r_path = os.path.join(save_dir, f"heatmap_residual_{tag}.png")
-        else:
-            u_path = None
-            r_path = None
-
-        _plot_heatmap(u_np, extent, f"u_pred heatmap ({tag})", u_path, symmetric=False, show=show)
-        _plot_heatmap(r_np, extent, f"residual heatmap ({tag})", r_path, symmetric=True, show=show)
+        diff_path = os.path.join(save_root, f"heatmap_diff_{tag}.png") if save_root else None
+        _plot_heatmap(diff_np, extent, f"diff heatmap ({tag})", diff_path, symmetric=True, show=show)
         return
 
-    # n >= 3: axis line + 2D slice perpendicular to axis
+    # n >= 3: axis line (u_true vs u_pred) + 2D slice diff heatmap
     ones = torch.ones(n_dim, device=device, dtype=dtype)
     axis = ones / torch.linalg.norm(ones)
     basis = _orthonormal_plane_basis(axis)
     v1 = basis[0].view(1, n_dim)
     v2 = basis[1].view(1, n_dim)
 
-    # Axis line plot
+    # Axis line plot (u_true vs u_pred)
     s_min = -k - margin_plot
     s_max = k + margin_plot
     s_vals = torch.linspace(s_min, s_max, grid, device=device, dtype=dtype).view(-1, 1)
     x_line = (s_vals / float(n_dim)) * torch.ones(s_vals.shape[0], n_dim, device=device, dtype=dtype)
-    with torch.no_grad():
-        u_line = model(x_line).squeeze()
+    u_pred_line = _batched_predict(model, x_line)
+    u_true_line = _exact_solution_axis(x_line, k)
     s_cpu = s_vals.squeeze().cpu().numpy()
-    u_cpu = u_line.cpu().numpy()
+    u_pred_cpu = u_pred_line.squeeze().cpu().numpy()
+    u_true_cpu = u_true_line.squeeze().cpu().numpy()
 
-    if save:
-        os.makedirs(save_dir, exist_ok=True)
-        line_path = os.path.join(save_dir, f"axis_line_u_{tag}.png")
-    else:
-        line_path = None
+    save_root = _ensure_dir(save_dir, save)
+    line_path = os.path.join(save_root, f"axis_line_{tag}.png") if save_root else None
 
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.plot(s_cpu, u_cpu, label="u_pred")
+    ax.plot(s_cpu, u_true_cpu, "k--", label="u_true")
+    ax.plot(s_cpu, u_pred_cpu, label="u_pred")
     ax.set_xlabel("s (sum x_i)")
     ax.set_ylabel("u")
-    ax.set_title(f"Axis line u_pred ({tag})")
+    ax.set_title(f"Axis line (u_true vs u_pred, {tag})")
     ax.legend()
     fig.tight_layout()
     if line_path:
@@ -242,35 +226,18 @@ def plot_after_epsilon(
     plt.close(fig)
 
     # 2D slice heatmap
-    if domain == "cylinder":
-        _, r_k = cylindrical_params(n_dim, k)
-        lim = r_k + margin_plot
-    else:
-        lim = k + margin_plot
+    _, r_k = cylindrical_params(n_dim, k)
+    lim = r_k + margin_plot
     xs = torch.linspace(-lim, lim, grid, device=device, dtype=dtype)
     x1, x2 = torch.meshgrid(xs, xs, indexing="ij")
     m = torch.zeros(n_dim, device=device, dtype=dtype)
     x_flat = m + x1.reshape(-1, 1) * v1 + x2.reshape(-1, 1) * v2
-    r, u = _batched_residual(model, hamiltonian, x_flat, low, high, eps, distance_fn, compute_residual)
-    r = r.view(grid, grid)
-    u = u.view(grid, grid)
-    if domain == "cylinder":
-        d = distance_to_cylindrical_domain(x_flat, k).view(grid, grid)
-        mask = d <= 1e-6
-        r = torch.where(mask, r, torch.tensor(float("nan"), device=r.device))
-        u = torch.where(mask, u, torch.tensor(float("nan"), device=u.device))
-
-    r_np = r.detach().cpu().numpy()
-    u_np = u.detach().cpu().numpy()
+    u_pred = _batched_predict(model, x_flat)
+    u_true = _exact_solution_axis(x_flat, k)
+    diff = (u_pred - u_true).view(grid, grid)
+    diff = _mask_to_cylinder(diff, x_flat, k)
+    diff_np = diff.detach().cpu().numpy()
     extent = [-lim, lim, -lim, lim]
 
-    if save:
-        os.makedirs(save_dir, exist_ok=True)
-        u_path = os.path.join(save_dir, f"slice_u_{tag}.png")
-        r_path = os.path.join(save_dir, f"slice_residual_{tag}.png")
-    else:
-        u_path = None
-        r_path = None
-
-    _plot_heatmap(u_np, extent, f"slice u_pred ({tag})", u_path, symmetric=False, show=show)
-    _plot_heatmap(r_np, extent, f"slice residual ({tag})", r_path, symmetric=True, show=show)
+    diff_path = os.path.join(save_root, f"slice_diff_{tag}.png") if save_root else None
+    _plot_heatmap(diff_np, extent, f"slice diff ({tag})", diff_path, symmetric=True, show=show)

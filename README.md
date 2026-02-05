@@ -80,8 +80,9 @@ Configs are grouped into sections. All keys are flattened internally, and top-le
 override grouped values.
 
 - `experiment`: `seed`, `device`
-- `setting`: `n`, `domain`, `k`, `margin`, `alpha`
+- `setting`: `n`, `domain`, `k`, `margin`, `alpha` (domain controls the *training* sampling domain)
 - `training`: `eps`, `steps`, `batch`, `lr`
+- `training`: `eps`, `steps`, `batch`, `lr`, `sample_every`, `max_grad_norm`
 - `model`: `width`, `layers`, `act`
 - `evaluation`: `eval`, `eval_points`, `log_every`
 
@@ -91,6 +92,11 @@ Training always saves outputs under:
 - `results/{YYYYMMDD_HHMMSS}_n{n}_k{k}/plots` (plots for each epsilon; 2D/3D use heatmaps/slices)
 - `results/{YYYYMMDD_HHMMSS}_n{n}_k{k}/checkpoints` (model checkpoints)
 - `results/{YYYYMMDD_HHMMSS}_n{n}_k{k}/config` (config snapshots used for the run)
+- `results/{YYYYMMDD_HHMMSS}_n{n}_k{k}/logs` (training_log.jsonl, epsilon_metrics.jsonl)
+
+Notes:
+- For n>=2, residuals use the cylindrical distance function and evaluation sampling is on the target cylinder domain.
+- For n=1, residuals and evaluation sampling use the box domain.
 
 ## Notes
 

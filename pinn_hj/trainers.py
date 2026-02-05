@@ -1,10 +1,10 @@
 from dataclasses import dataclass
+import time
 from typing import Callable, List, Optional, Tuple
 
 import torch
 from torch import Tensor
 from torch.optim import Adam
-from tqdm import trange
 
 from .distance import distance_to_box
 from .utils import resolve_device
@@ -16,6 +16,8 @@ class TrainConfig:
     batch_size: int = 2048
     lr: float = 1e-3
     outer_margin: float = 1.0  # sampling margin outside the box
+    sample_every: int = 1
+    max_grad_norm: Optional[float] = None
     eval_points: int = 200
     log_every: int = 200
     device: str = "auto"  # "cpu" | "cuda" | "auto" | torch.device
@@ -83,6 +85,7 @@ def train_for_epsilon(
     cfg: TrainConfig,
     sample_fn: Callable[[int, Tensor, Tensor, float, torch.device, torch.dtype], Tensor] = sample_collocation,
     distance_fn: Optional[Callable[[Tensor], Tensor]] = None,
+    on_log: Optional[Callable[[int, float, float], None]] = None,
 ) -> List[Tuple[int, float]]:
     """
     Train the PINN for a fixed epsilon. Returns sparse (step, loss) logs.
@@ -95,9 +98,11 @@ def train_for_epsilon(
     opt = Adam(model.parameters(), lr=cfg.lr)
     losses: List[Tuple[int, float]] = []
 
-    bar = trange(cfg.steps, desc=f"eps={eps:g}", leave=False)
-    for t in bar:
-        x = sample_fn(cfg.batch_size, low, high, cfg.outer_margin, device, next(model.parameters()).dtype)
+    start_time = time.time()
+    x = None
+    for t in range(cfg.steps):
+        if x is None or (t % max(int(cfg.sample_every), 1) == 0):
+            x = sample_fn(cfg.batch_size, low, high, cfg.outer_margin, device, next(model.parameters()).dtype)
         r, _ = compute_residual(
             model,
             hamiltonian,
@@ -112,10 +117,14 @@ def train_for_epsilon(
 
         opt.zero_grad(set_to_none=True)
         loss.backward()
+        if cfg.max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), float(cfg.max_grad_norm))
         opt.step()
 
         if (t + 1) % cfg.log_every == 0:
             l = loss.item()
             losses.append((t + 1, l))
-            bar.set_postfix(loss=f"{l:.3e}")
+            elapsed = time.time() - start_time
+            if on_log is not None:
+                on_log(t + 1, l, elapsed)
     return losses

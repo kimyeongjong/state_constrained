@@ -1,4 +1,6 @@
 import argparse
+import json
+import math
 import os
 import shutil
 import sys
@@ -17,7 +19,11 @@ if PROJECT_ROOT not in sys.path:
 from pinn_hj.networks import MLP
 from pinn_hj.hamiltonians import ShiftedL1Hamiltonian
 from pinn_hj.trainers import TrainConfig, compute_residual, train_for_epsilon
-from pinn_hj.cylinder_domain import distance_to_cylindrical_domain, sample_box_domain
+from pinn_hj.cylinder_domain import (
+    distance_to_cylindrical_domain,
+    sample_box_domain,
+    sample_cylindrical_domain,
+)
 from pinn_hj.config import parse_args_with_config
 from pinn_hj.utils import resolve_device, set_seed
 from scripts.plot import plot_after_epsilon
@@ -27,6 +33,11 @@ def exact_solution_1d(x: torch.Tensor, k: float) -> torch.Tensor:
     # u(x) = exp(x - k), inside [-k, k]
     return torch.exp(x - float(k))
 
+
+def exact_solution_axis(x: torch.Tensor, k: float) -> torch.Tensor:
+    n_dim = x.shape[1]
+    a = x.sum(dim=1, keepdim=True) / math.sqrt(float(n_dim))
+    return torch.exp(a - k / math.sqrt(float(n_dim)))
 
 def _build_parser(defaults=None):
     defaults = defaults or {}
@@ -50,6 +61,8 @@ def _build_parser(defaults=None):
     p.add_argument("--steps", type=int, default=defaults.get("steps", 4000), help="Training steps per epsilon")
     p.add_argument("--batch", type=int, default=defaults.get("batch", 2048), help="Collocation batch size")
     p.add_argument("--lr", type=float, default=defaults.get("lr", 1e-3), help="Learning rate")
+    p.add_argument("--sample-every", type=int, default=defaults.get("sample_every", 1), help="Resample batch every N steps")
+    p.add_argument("--max-grad-norm", type=float, default=defaults.get("max_grad_norm"), help="Max grad norm for clipping (disabled if null)")
     p.add_argument("--width", type=int, default=defaults.get("width", 128), help="Hidden layer width")
     p.add_argument("--layers", type=int, default=defaults.get("layers", 3), help="Number of hidden layers")
     p.add_argument("--act", type=str, default=defaults.get("act", "tanh"), help="Activation (tanh|silu|gelu|relu)")
@@ -103,6 +116,10 @@ def _save_config_snapshot(run_dir: str, args: argparse.Namespace) -> None:
         yaml.safe_dump(resolved, f, sort_keys=False)
 
 
+def _append_json_line(path: str, payload: dict) -> None:
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
 
 
 def main(argv=None):
@@ -133,6 +150,10 @@ def main(argv=None):
     ckpt_dir = os.path.join(run_dir, "checkpoints")
 
     _save_config_snapshot(run_dir, args)
+    log_dir = os.path.join(run_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    train_log_path = os.path.join(log_dir, "training_log.jsonl")
+    eps_log_path = os.path.join(log_dir, "epsilon_metrics.jsonl")
 
     widths = tuple([args.width] * int(args.layers))
     model = MLP(in_dim=n_dim, out_dim=1, widths=widths, act=args.act).to(device=device, dtype=dtype)
@@ -143,24 +164,48 @@ def main(argv=None):
         batch_size=int(args.batch),
         lr=float(args.lr),
         outer_margin=float(margin),
+        sample_every=int(args.sample_every),
+        max_grad_norm=args.max_grad_norm,
         eval_points=int(args.eval_points),
         log_every=int(args.log_every),
         device=args.device,
     )
 
-    # Placeholders used by trainer API
+    # Placeholders used by trainer API (box bounds still needed for residuals)
     low = torch.full((n_dim,), -k, device=device, dtype=dtype)
     high = torch.full((n_dim,), +k, device=device, dtype=dtype)
 
+    # Training sampling domain is controlled by config domain:
+    # - box: expanded box around [-k, k]^n
+    # - cylinder: expanded cylinder around Ω_k (n>=2 only)
     if domain == "box":
         sample_fn = lambda n, low, high, m, dev, dt: sample_box_domain(n, n_dim, k, margin=m, device=dev, dtype=dt)
-        distance_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None
     else:
-        # Train on a superset box; use cylindrical distance in the residual.
-        sample_fn = lambda n, low, high, m, dev, dt: sample_box_domain(n, n_dim, k, margin=m, device=dev, dtype=dt)
+        if n_dim < 2:
+            raise ValueError("cylinder sampling requires n>=2")
+        sample_fn = lambda n, low, high, m, dev, dt: sample_cylindrical_domain(
+            n, n_dim, k, margin=m, device=dev, dtype=dt
+        )
+
+    # Residual distance: cylinder for n>=2, box for n=1.
+    if n_dim < 2:
+        distance_fn = None
+    else:
         distance_fn = lambda x: distance_to_cylindrical_domain(x, k)
 
     for eps in args.eps:
+        def _on_log(step: int, loss: float, elapsed: float) -> None:
+            print(f"[eps={eps:g}] step={step} loss={loss:.3e} elapsed={elapsed:.1f}s")
+            _append_json_line(
+                train_log_path,
+                {
+                    "eps": float(eps),
+                    "step": int(step),
+                    "loss": float(loss),
+                    "elapsed_sec": float(elapsed),
+                },
+            )
+
         train_for_epsilon(
             model,
             H,
@@ -170,19 +215,23 @@ def main(argv=None):
             cfg,
             sample_fn=sample_fn,
             distance_fn=distance_fn,
+            on_log=_on_log,
         )
 
-        if eval_mode == "exact":
-            if n_dim != 1:
-                raise ValueError("exact evaluation is only supported for 1D")
-            x_eval = torch.linspace(-k, k, int(cfg.eval_points), device=device, dtype=dtype).view(-1, 1)
-            with torch.no_grad():
-                u_pred = model(x_eval)
-                u_true = exact_solution_1d(x_eval, k)
-                mse = torch.mean((u_pred - u_true) ** 2).item()
-            print(f"[eps={eps:g}] MSE on [-k,k]: {mse:.6e}")
-        else:
+        if n_dim < 2:
             x_eval = sample_box_domain(cfg.eval_points, n_dim, k, margin=0.0, device=device, dtype=dtype)
+        else:
+            x_eval = sample_cylindrical_domain(cfg.eval_points, n_dim, k, margin=0.0, device=device, dtype=dtype)
+        with torch.no_grad():
+            u_pred = model(x_eval)
+            u_true = exact_solution_1d(x_eval, k) if n_dim == 1 else exact_solution_axis(x_eval, k)
+            diff = u_pred - u_true
+            mse = torch.mean(diff ** 2).item()
+            denom = torch.clamp(torch.linalg.norm(u_true), min=1e-12)
+            rel_l2 = (torch.linalg.norm(diff) / denom).item()
+
+        res_mse = None
+        if eval_mode == "residual":
             r_eval, _ = compute_residual(
                 model,
                 H,
@@ -194,7 +243,22 @@ def main(argv=None):
                 create_graph=False,
             )
             res_mse = torch.mean(r_eval ** 2).item()
-            print(f"[eps={eps:g}] residual MSE on eval set: {res_mse:.6e}")
+
+        if res_mse is None:
+            print(f"[eps={eps:g}] MSE={mse:.6e} relL2={rel_l2:.6e}")
+        else:
+            print(f"[eps={eps:g}] MSE={mse:.6e} relL2={rel_l2:.6e} residualMSE={res_mse:.6e}")
+
+        _append_json_line(
+            eps_log_path,
+            {
+                "eps": float(eps),
+                "mse": float(mse),
+                "rel_l2": float(rel_l2),
+                "residual_mse": None if res_mse is None else float(res_mse),
+                "eval_points": int(cfg.eval_points),
+            },
+        )
 
         if plot_enabled or save_enabled:
             try:
@@ -202,13 +266,7 @@ def main(argv=None):
                     n_dim=n_dim,
                     k=k,
                     eps=eps,
-                    domain=domain,
                     model=model,
-                    hamiltonian=H,
-                    low=low,
-                    high=high,
-                    distance_fn=distance_fn,
-                    compute_residual=compute_residual,
                     save=save_enabled,
                     save_dir=save_dir,
                     show=plot_enabled,
