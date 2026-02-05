@@ -7,4 +7,6 @@ __all__ = [
     "networks",
     "trainers",
     "cylinder_domain",
+    "config",
+    "utils",
 ]

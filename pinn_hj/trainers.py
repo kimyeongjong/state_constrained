@@ -7,6 +7,7 @@ from torch.optim import Adam
 from tqdm import trange
 
 from .distance import distance_to_box
+from .utils import resolve_device
 
 
 @dataclass
@@ -17,7 +18,7 @@ class TrainConfig:
     outer_margin: float = 1.0  # sampling margin outside the box
     eval_points: int = 200
     log_every: int = 200
-    device: str = "auto"  # "cpu" | "cuda" | "auto"
+    device: str = "auto"  # "cpu" | "cuda" | "auto" | torch.device
 
 
 def compute_residual(
@@ -28,13 +29,14 @@ def compute_residual(
     high: Tensor,
     eps: float,
     distance_fn: Optional[Callable[[Tensor], Tensor]] = None,
+    create_graph: bool = True,
 ) -> Tuple[Tensor, Tensor]:
     """
     Compute residual r(x) = u + H(x, Du) - d(x,Ω)/ε and return (r, u).
     """
     x.requires_grad_(True)
     u = model(x)  # (N,1)
-    grad_u = torch.autograd.grad(u.sum(), x, create_graph=True)[0]  # (N,D)
+    grad_u = torch.autograd.grad(u.sum(), x, create_graph=create_graph)[0]  # (N,D)
 
     # For D=1 pass the scalar gradient; for D>1 pass Du unless the Hamiltonian requests ||Du||.
     if grad_u.shape[1] == 1:
@@ -81,25 +83,31 @@ def train_for_epsilon(
     cfg: TrainConfig,
     sample_fn: Callable[[int, Tensor, Tensor, float, torch.device, torch.dtype], Tensor] = sample_collocation,
     distance_fn: Optional[Callable[[Tensor], Tensor]] = None,
-) -> List[float]:
+) -> List[Tuple[int, float]]:
     """
-    Train the PINN for a fixed epsilon. Returns per-step losses (sparse).
+    Train the PINN for a fixed epsilon. Returns sparse (step, loss) logs.
     """
-    if cfg.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(cfg.device)
+    device = resolve_device(cfg.device)
     model.to(device)
     low = low.to(device)
     high = high.to(device)
 
     opt = Adam(model.parameters(), lr=cfg.lr)
-    losses = []
+    losses: List[Tuple[int, float]] = []
 
     bar = trange(cfg.steps, desc=f"eps={eps:g}", leave=False)
     for t in bar:
         x = sample_fn(cfg.batch_size, low, high, cfg.outer_margin, device, next(model.parameters()).dtype)
-        r, _ = compute_residual(model, hamiltonian, x, low, high, eps, distance_fn=distance_fn)
+        r, _ = compute_residual(
+            model,
+            hamiltonian,
+            x,
+            low,
+            high,
+            eps,
+            distance_fn=distance_fn,
+            create_graph=True,
+        )
         loss = (r ** 2).mean()
 
         opt.zero_grad(set_to_none=True)
@@ -108,6 +116,6 @@ def train_for_epsilon(
 
         if (t + 1) % cfg.log_every == 0:
             l = loss.item()
-            losses.append(l)
+            losses.append((t + 1, l))
             bar.set_postfix(loss=f"{l:.3e}")
     return losses

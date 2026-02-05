@@ -9,7 +9,7 @@ and then decreasing $\epsilon -> 0$.
 
 First experiment:
 - Domain $\Omega = [-k, k]$
-- Hamiltonian $H(x, p) = |p - 1| - 1$ for $p \in [0, 2]$, extended smoothly as a convex quadratic outside.
+- Hamiltonian $H(x, p) = |p - 1| - 1$ inside $[0,2]$, with a quadratic tail outside (C^1, convex, coercive)
 - The viscosity solution inside $\Omega$: $u(x) = \exp(x - k)$
 
 ## Setup
@@ -26,13 +26,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
-## Run (1D experiment)
+## Run (Unified Experiment Script)
 
-```
-uv run python experiments/state_constrained_1d.py --k 2 --eps 0.5 0.2 0.1 0.05 --steps 4000 --width 128 --layers 3 --batch 2048
-```
-
-### Config-based runs (recommended)
+All experiments are run via a single script: `scripts/train.py`.
 
 Example configs live in `configs/`:
 
@@ -42,38 +38,59 @@ Example configs live in `configs/`:
 Run with a YAML config:
 
 ```
-uv run python experiments/state_constrained_1d.py --config configs/state_constrained_1d.yaml
+uv run python scripts/train.py --config configs/state_constrained_1d.yaml
 ```
 
 Override any value from the config on the CLI:
 
 ```
-uv run python experiments/state_constrained_1d.py --config configs/state_constrained_1d.yaml --steps 8000 --lr 5e-4
+uv run python scripts/train.py --config configs/state_constrained_1d.yaml --steps 8000 --lr 5e-4
 ```
 
-Arguments:
-- --k: half-width of domain [-k, k]
+You can also run directly without a config:
+
+```
+uv run python scripts/train.py --n 1 --domain box --k 2 --eps 0.5 0.2 0.1 0.05 --steps 4000 --width 128 --layers 3 --batch 2048
+```
+
+and for the cylindrical domain:
+
+```
+uv run python scripts/train.py --n 3 --domain cylinder --k 2 --eps 0.5 0.2 0.1 0.05 --steps 4000 --width 128 --layers 3 --batch 2048
+```
+
+Arguments (selected):
+- --n: dimension
+- --domain: box | cylinder | auto
+- --eval: exact | residual | auto
+- --k: domain scale
 - --eps: list of epsilons for outer loop
 - --steps: training steps per epsilon (inner loop)
 - --batch: collocation batch size
-- --margin: sample outside Omega up to this margin (default: 0.5*k)
+- --margin: sampling margin (default 0.5*k for box, 0 for cylinder)
 - --lr: learning rate (default: 1e-3)
 - --device: cpu or cuda (default: auto)
-- --plot: set to plot predictions after each epsilon
+- Plots and checkpoints are always saved during training.
 
-The script prints the MSE vs the exact solution u(x) = exp(x - k) on a fine grid after each epsilon stage.
+For 1D, the script prints the MSE vs the exact solution u(x) = exp(x - k). For higher dimensions, it reports residual MSE on an evaluation set and can also plot slice visualizations.
 
-## Run (cylindrical domain experiment)
+## Config Structure
 
-```
-uv run python experiments/state_constrained_cylinder.py --n 3 --k 2 --eps 0.5 0.2 0.1 0.05 --steps 4000 --width 128 --layers 3 --batch 2048
-```
+Configs are grouped into sections. All keys are flattened internally, and top-level keys (if provided)
+override grouped values.
 
-Config-based:
+- `experiment`: `seed`, `device`
+- `setting`: `n`, `domain`, `k`, `margin`, `alpha`
+- `training`: `eps`, `steps`, `batch`, `lr`
+- `model`: `width`, `layers`, `act`
+- `evaluation`: `eval`, `eval_points`, `log_every`
 
-```
-uv run python experiments/state_constrained_cylinder.py --config configs/state_constrained_cylinder.yaml
-```
+## Outputs
+
+Training always saves outputs under:
+- `results/{YYYYMMDD_HHMMSS}_n{n}_k{k}/plots` (plots for each epsilon; 2D/3D use heatmaps/slices)
+- `results/{YYYYMMDD_HHMMSS}_n{n}_k{k}/checkpoints` (model checkpoints)
+- `results/{YYYYMMDD_HHMMSS}_n{n}_k{k}/config` (config snapshots used for the run)
 
 ## Notes
 
